@@ -537,9 +537,9 @@ def Start(m,s,v):
     print("#########################################################")
     print(datetime.now().strftime("%H:%M:%S") + ": Creating UV...")
 
-    #shutil.copy2(mesh_location,sys.path[0])
-    #subprocess.run([xatlas_dir+"meshuv","mesh.obj"],stdout=open(os.devnull, 'wb'))
-    #os.remove("mesh.obj")
+    shutil.copy2(mesh_location,sys.path[0])
+    subprocess.run([xatlas_dir+"meshuv","mesh.obj"],stdout=open(os.devnull, 'wb'))
+    os.remove("mesh.obj")
     print(datetime.now().strftime("%H:%M:%S") + ": Done")
 
     print(datetime.now().strftime("%H:%M:%S") + ": Loading .OBJ...")
