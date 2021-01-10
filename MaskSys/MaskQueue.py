@@ -11,7 +11,7 @@ done_masks = None
 done_add = None
 
 count = None
-max_p = 3
+max_p = 5
 process_pool = None
 
 closed = None
@@ -81,7 +81,6 @@ def start(img_size):
     pending_masks = Manager().Queue()
     done_masks = Manager().Queue()
     not_added = Manager().Queue()
-    not_added.maxsize = 10000
     closed = Manager().Value('i', 0)
     done_add = Manager().Value('i', 0)
     count = Manager().Value('i', 0)
@@ -94,7 +93,6 @@ def start(img_size):
 
     for i in range(max_p):
         process_pool.append(Process(target=maskTask,args=(pending_masks, done_masks, done_add, name, X_shape2)))
-
         process_pool[i].start()
 
     startCleaner()
