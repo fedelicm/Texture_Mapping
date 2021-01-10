@@ -8,8 +8,6 @@ import os
 import multiprocessing
 from multiprocessing import Process, Queue, Manager, Pool, shared_memory
 import queue as qq
-
-import pymetis
 from PIL import Image
 from PIL import ImageOps
 import Masks as CT
@@ -25,8 +23,10 @@ mesh_obj = None
 xatlas_dir = None
 sfm_json = None
 import sys
-#import numba
+import random
 from numba import jit, njit  # , cuda, float32
+from numba import prange as pr
+from numba.typed import List, Dict
 import scipy
 from scipy import spatial
 import math
@@ -35,113 +35,89 @@ intrinsics = {}
 poses = {}
 mesh = None
 from operator import itemgetter
-from Geometry import KDTree
 #import pyvista as pv
+import networkx as nx
+import Grouper
+from pyoctree import pyoctree as ot
+
+@jit(nopython=True)
+def calcBoundingBoxTri(c1,c2,c3):
+
+    xmin = min([c1[0],c2[0],c3[0]])
+    ymin = min([c1[1],c2[1],c3[1]])
+    xmax = max([c1[0],c2[0],c3[0]])
+    ymax = max([c1[1],c2[1],c3[1]])
+
+    return np.array([[(int)(xmin[0]),(int)(ymin[0])],[(int)(xmax[0]),(int)(ymax[0])]], dtype=np.float64)
+
+
+@njit
+def matmult(matrix1,matrix2):
+
+    x = matrix1.shape[0]
+    y = matrix2.shape[1]
+    rmatrix = np.zeros(shape=(x,y), dtype=np.float64)
+
+    for i in range(len(matrix1)):
+        for j in range(len(matrix2[0])):
+            for k in range(len(matrix2)):
+                rmatrix[i][j] += matrix1[i][k] * matrix2[k][j]
+    return rmatrix
+
+@njit
+def getPixelCoords(wrld_xyz, intrinsics_mtrx, extrinsics_mtrx):
+
+    a = matmult(intrinsics_mtrx, extrinsics_mtrx)
+
+    b = matmult(a, wrld_xyz)
+
+    if (b[2] != 1):
+        b[0] = b[0] / b[2]
+        b[1] = b[1] / b[2]
+
+    return b[:2]
+
+@njit
+def checkfit(face_coords_np, im, em, h, w):
+    source = List()
+    count = -1
+    for y in face_coords_np:
+        count+=1
+        xyz1 = np.zeros(shape=(4,1), dtype=np.float64)
+        xyz1[0] = y[0]
+        xyz1[1] = y[1]
+        xyz1[2] = y[2]
+        xyz1[3] = 1
+
+        c = getPixelCoords(xyz1, im, em)
+        source.append(c)
+
+        if c[0] < 0:
+            return 0
+        elif c[1] < 0:
+            return 0
+        elif (c[1] > h):
+            return 0
+        elif (c[0] > w):
+            return 0
+
+    bb = calcBoundingBoxTri(source[0],source[1],source[2])
+    if (bb[0][0] == bb[1][0]):
+        return 0
+
+    elif (bb[0][1] == bb[1][1]):
+        return 0
+
+    return 1
 
 @njit(fastmath=True)
-def checkocclussion(face, face2, camera_centre):
+def isbetween(face_coords_np, c, x):
 
-    vectors = np.array([[0,0,0],[0,0,0],[0,0,0]],dtype=np.float32)
-
-    vectors[0] = np.subtract(face[0], camera_centre)
-    vectors[1] = np.subtract(face[1], camera_centre)
-    vectors[2] = np.subtract(face[2], camera_centre)
-
-    for x in vectors:
-        temp = np.subtract(x,camera_centre)
-        camera_direction = temp / np.linalg.norm(temp)
-        v0 = face2[0]
-        v1 = face2[1]
-        v2 = face2[2]
-
-        v0v1 = np.subtract(v1, v0)
-        v0v2 = np.subtract(v2, v0)
-        pvec = np.cross(camera_direction, v0v2)
-
-        det = np.dot(v0v1, pvec)
-
-        if det < 0.000001:
-            return 0
-
-        invDet = 1.0 / det
-        tvec = np.subtract(camera_centre, v0)
-        u = np.multiply(np.dot(tvec, pvec), invDet)
-
-        if u < 0 or u > 1:
-            return 0
-
-        qvec = np.cross(tvec, v0v1)
-        v = np.multiply(np.dot(camera_direction, qvec), invDet)
-
-        if v < 0 or u + v > 1:
-            return 0
-
-        t = np.multiply(np.dot(v0v2, qvec), invDet)
-        if t >= 0:
-            return 1
-
-    return 0
-
-def checkocclussion2(face, face2, camera_centre):
-
-    vectors = np.array([[0,0,0],[0,0,0],[0,0,0]],dtype=np.float32)
-
-    vectors[0] = np.subtract(face[0], camera_centre)
-    vectors[1] = np.subtract(face[1], camera_centre)
-    vectors[2] = np.subtract(face[2], camera_centre)
-
-    for x in vectors:
-        temp = np.subtract(x,camera_centre)
-        camera_direction = temp / np.linalg.norm(temp)
-        v0 = face2[0]
-        v1 = face2[1]
-        v2 = face2[2]
-
-        v0v1 = np.subtract(v1, v0)
-        v0v2 = np.subtract(v2, v0)
-        pvec = np.cross(camera_direction, v0v2)
-
-        det = np.dot(v0v1, pvec)
-
-        if det < 0.000001:
-            return 0
-
-        invDet = 1.0 / det
-        tvec = np.subtract(camera_centre, v0)
-        u = np.multiply(np.dot(tvec, pvec), invDet)
-
-        if u < 0 or u > 1:
-            return 0
-
-        qvec = np.cross(tvec, v0v1)
-        v = np.multiply(np.dot(camera_direction, qvec), invDet)
-
-        if v < 0 or u + v > 1:
-            return 0
-
-        t = np.multiply(np.dot(v0v2, qvec), invDet)
-        if t >= 0:
-            return 1
-
-    return 0
-
-@njit(parallel=True)
-def occlussioncheck(face, meshes, cameras, length):
-
-    results = np.zeros(length, dtype=np.int16)
-
-    for x in range(length):
-        camera_centre = cameras[x]
-        for y in meshes:
-            a = -1
-            a = checkocclussion(face, y, camera_centre)
-
-            if (a == 1):
-                results[x] = 1
-                break
-            results[x] = 0
-
-    return results
+    for z in face_coords_np:
+        for y in x:
+            if( np.sqrt(np.square(y[0]-c[0]) + np.square(y[1]-c[1]) + np.square(y[2]-c[2])) < np.sqrt(np.square(z[0]-c[0]) + np.square(z[1]-c[1]) + np.square(z[2]-c[2]))):
+                return True
+    return False
 
 def selectViewTaskV3(data):
     args = data[0]
@@ -151,169 +127,228 @@ def selectViewTaskV3(data):
 
     intrinsics = data[4]
 
-    #tree = KDTree.triangleTree()
-    y = np.array(data[3], dtype=np.float32)
-    # tree.addTriangles(triangles=y)
-    # tree.buildTree()
-    cam_score = np.zeros(len(cameras))
+    face = data[5]
+    vert = data[3]
+
     cam_score2 = np.zeros(len(cameras))
     results = []
 
-    #1st pass
-
+    status = []
     for z in args:
-        face_coords_np = np.array(z[0], dtype=np.float32)
-        count = 0
+        status.append([])
+
+    for z in status:
+        for y in cameras:
+            z.append(None)
+
+    # tree = ot.PyOctree(vert, face)
+    # p = Dict()
+    # for x in poses:
+    #     p[x] = np.array(poses[x][1], dtype=np.float32)
+
+    count2 = -1
+    occluded = {}
+    cr = -1
+    for z in args:
+        cr += 1
+        if(cr==10):
+            cr=0
+
+        count2 += 1
+        face_coords_np = np.array(z[0], dtype=np.float64)
+        count = -1
         for cam in cameras:
-            count+=1
-            fit = -1
-            source = []
-            for y in face_coords_np:
-                xyz1 = np.array([y[0], y[1], y[2], 1], dtype=np.float32)
-                im = np.array(intrinsics[cameras[cam][1]][0], dtype=np.float32)
-                em = np.array(poses[cameras[cam][0]][0], dtype=np.float32)
-                c = CT.getPixelCoords(xyz1, im, em)
-                source.append(c)
 
-                if c[0] < 0:
-                    fit = 0
-                    break
-                elif c[1] < 0:
-                    fit = 0
-                    break
-                elif (c[1] > intrinsics[cameras[cam][1]][2][1]):
-                    fit = 0
-                    break
-                elif (c[0] > intrinsics[cameras[cam][1]][2][0]):
-                    fit = 0
-                    break
+            count += 1
 
-            if (fit == 0):
-                continue
+            # if (cr == 0):
+            #     ix = cameras[cam][0]
+            #     rays = getRays(face, vert, z[1], p[ix])
+            #     rays = rays[~np.all(rays == 0, axis=2)]
+            #     rays = pairpoints(rays)
+            #     t = int(len(rays)*0.05)
+            #     if(t>0):
+            #         rays = np.array(random.choices(rays, k=t))
+            #
+            #     start = time.time()
+            #     i = tree.rayIntersections(rays)
+            #     end = time.time()
+            #     print(str(rays.shape) + " " + str(end-start))
+            #     if (len(i) > 0):
+            #         cam_score2[count] -= 5
+            #         if str(z[1]) in occluded:
+            #             occluded[str(z[1])].append(cam)
+            #         else:
+            #             occluded[str(z[1])] = [cam]
+            #     else:
+            #         occluded[str(z[1])] = []
 
-            if (fit == -1):
-                bb = CT.calcBoundingBoxTri(source)
-                if (bb[0][0] == bb[1][0]):
-                    continue
-                elif (bb[0][1] == bb[1][1]):
-                    continue
 
-            cam_score2[count-1] += 1
+            status[count2][count]= checkfit(face_coords_np,
+                                            np.array(intrinsics[cameras[cam][1]][0], dtype=np.float64),
+                                            np.array(poses[cameras[cam][0]][0], dtype=np.float64),
+                                            intrinsics[cameras[cam][1]][2][1],
+                                            intrinsics[cameras[cam][1]][2][0])
+            d = dist2(cent(face_coords_np), np.array(poses[cameras[cam][0]][1]))
+            angle = checkAngle2(face_coords_np, np.array(poses[cameras[cam][0]][2]))
+            if status[count2][count] == 1:
+                cam_score2[count] -= angle/d
+
     ####################################################
 
+    count2 = -1
     for z in args:
+        count2 += 1
         min = -1
         face = z[1]
-        face_coords_np = np.array(z[0], dtype=np.float32)
-        #nearby = tree.getpoints_within_d(face_coords_np, 0.05)
-        # nearby = tree.getpoints_between_range(face_coords_np, 0.09, 0.1)
+        face_coords_np = np.array(z[0], dtype=np.float64)
 
-
-        # centres = []
-        # for x in cameras:
-        #     centres.append(np.array(poses[cameras[x][0]][1], dtype=np.float32))
-        #
-        # occluded = occlussioncheck(face_coords_np, np.array(nearby, dtype=np.float32), np.array(centres, dtype=np.float32), len(centres))
-
-        count = 0
+        count = -1
         for cam in cameras:
+            if(str(z[1]) in occluded):
+                if(len(occluded[str(z[1])]>0)):
+                    continue
+            count += 1
+
             # if(int(occluded[count])==1):
             #     count+=1
             #     continue
             # else:
             #     count+=1
-            fit = -1
-            b = checkAngle(face_coords_np, poses[cameras[cam][0]][2])
-            source = []
-            for y in face_coords_np:
-                xyz1 = np.array([y[0],y[1],y[2],1], dtype=np.float32)
-                im = np.array(intrinsics[cameras[cam][1]][0], dtype=np.float32)
-                em = np.array(poses[cameras[cam][0]][0], dtype=np.float32)
-                #dist = np.array(intrinsics[cameras[cam][1]][1], dtype=np.float32)
-                c = CT.getPixelCoords(xyz1, im, em)
-                ##c = CT.undistortcoords(c, im, dist)
-                source.append(c)
-
-                if c[0] < 0:
-                    fit = 0
-                    break
-                elif c[1] < 0:
-                    fit = 0
-                    break
-                elif(c[1] > intrinsics[cameras[cam][1]][2][1]):
-                    fit = 0
-                    break
-                elif (c[0] > intrinsics[cameras[cam][1]][2][0]):
-                    fit = 0
-                    break
-
-            if (fit == 0):
+            if status[count2][count] == 0:
                 continue
 
-            if(fit==-1):
-                bb = CT.calcBoundingBoxTri(source)
-                if(bb[0][0] == bb[1][0]):
-                    continue
-                elif(bb[0][1] == bb[1][1]):
-                    continue
-            d = dist(face_coords_np,poses[cameras[cam][0]][1])
-            h = b + (np.sqrt(cam_score2[count])/np.square(d)*2)
-            if b < 0:
-                continue
-            elif min == -1:
-                min = [h,  cam, face, count]
-            else:
-                if h > min[0]:
-                    min = [h, cam, face, count]
-            count+=1
-        #cam_score[min[3]]+=1
+            #d = dist2(cent(face_coords_np), np.array(poses[cameras[cam][0]][1]))
+
+            angle = checkAngle2(face_coords_np, np.array(poses[cameras[cam][0]][2]))
+            #score = 0.6*(angle/180) + 0.4*(cam_score2[count])/len(cam_score2) - 0.2*d
+            #score = (cam_score2[count]) + len(args)*( angle )
+            score = cam_score2[count]*(-angle)
+            #angle = checkAngle2(face_coords_np, poses[cameras[cam][0]][2])
+            #score = angle * cam_score2[count] /  (np.square(d)*20)
+            if min == -1:
+                min = [score,  cam, face, count]
+            elif score < min[0]:
+                min = [score, cam, face, count]
+
+
         results.append(min)
 
     return results
 
-
+@njit
 def dist(p1,p2):
     dist = np.linalg.norm(p2-p1)
     return dist
 
+@njit
+def dist2(c,y):
+    return np.sqrt(np.square(y[0] - c[0]) + np.square(y[1] - c[1]) + np.square(y[2] - c[2]))
+
+@njit(parallel=True)
+def pairpoints(rays):
+    rays2 = np.zeros(shape=((int)(rays.shape[0] / 2), 2, 3,), dtype=np.float32)
+    for i in pr((int)(rays.shape[0] / 2)):
+        rays2[i][0] = rays[(int)(i * 2)]
+        rays2[i][1] = rays[(int)(i * 2 + 1)]
+    return rays2
+
+@njit
+def cent(triangle):
+    c = np.zeros(3)
+    c[0] = (triangle[0][0] + triangle[1][0] + triangle[2][0])/3
+    c[1] = (triangle[0][1] + triangle[1][1] + triangle[2][1])/3
+    c[2] = (triangle[0][2] + triangle[1][2] + triangle[2][2])/3
+    return c
+
 def groupMesh(mesh):
-    faces = mesh.faces_coords()
+    face_c = mesh.faces_coords()
     face = mesh.faces()
+
+    vert = mesh.mesh_vertices()
+
     max_p = 10
-    pool = Pool(max_p)
-    args = []
+    batches = 6
+    batch_size = max_p*batches
+    parts = 8
 
-    n_cuts, membership = pymetis.part_graph(max_p, adjacency=face)
+    # grouper = Grouper.partition(vert, face, parts)
+    # partitions = grouper.getParts()
+    partitions = pkl.load(open("partitions.p", "rb"))
+    parts = len(partitions)
+    vert_parts = []
 
+
+    for x in range(parts):
+        vert_parts.append([])
+
+    for x in range(parts):
+        for y in partitions[x]:
+            v = [[vert[y[0]-1],  vert[y[1]-1], vert[y[2]-1]], np.array(y,dtype=int)]
+            vert_parts[x].append(v)
+
+    results = []
     iter = 0
-    for x in range(max_p):
-        args.append([])
+    occluded = {}
+    face2 = []
+    for x in face:
+        face2.append([x[0] - 1, x[1] - 1, x[2] - 1])
+    face2 = np.array(face2, dtype=np.int32)
+    vert2 = np.array(vert, dtype=float)
+    # tree = ot.PyOctree(vert2, face2)
+    # p = Dict()
+    # for x in poses:
+    #     p[x] = np.array(poses[x][1], dtype=np.float32)
+    # cnt = -1
+    # for f in face2:
+    #     start = time.time()
+    #     cnt2 = 0
+    #     cnt += 1
+    #     for cam in cameras:
+    #         id = cameras[cam][0]
+    #         rays = getRays(face2, vert2, f, p[id])
+    #         rays = rays[~np.all(rays == 0, axis=2)]
+    #         rays = pairpoints(rays)
+    #         t = int(len(rays)*0.05)
+    #         if(t>0):
+    #           rays = np.array(random.choices(rays, k=t))
+    #         i = tree.rayIntersections(rays)
+    #         if(len(i)>0):
+    #             print("Occlussion Detected")
+    #             if str(face[cnt]) in occluded:
+    #                 occluded[str(face[cnt])].append(cam)
+    #             else:
+    #                 occluded[str(face[cnt])] = [cam]
+    #         else:
+    #             occluded[str(face[cnt])] = []
+    #         cnt2+=1
+    #     end = time.time()
+    #     print(str(cnt+1)+"."+str(len(occluded[str(face[cnt])])) + " " + str(end-start))
+    #
+    # print("Done Occlussion Check")
 
-    args2 = []
-    for x in range(max_p):
-        args2.append([])
+    while iter < parts:
 
-    # for y in range(len(faces)):
-    #     args[iter].append([faces[y], face[y]])
-    #     iter+=1
-    #     if(iter == max_p):
-    #         iter=0
+        args2 = []
+        for x in range(batch_size):
+            if(iter+x>=parts):
+                break
+            args2.append([])
 
-    iter = 0
-    for y in face:
-        args[membership[y[0]]].append( [faces[iter] , y])
-        iter+=1
+        for x in range(batch_size):
+            if(iter+x>=parts):
+                break
+            args2[x].append([vert_parts[iter+x], cameras, poses, vert2, intrinsics, face2])
 
-    for y in range(max_p):
-        args2[y].append([args[y], cameras, poses, faces, intrinsics])
-
-
-    results = pool.starmap(selectViewTaskV3,args2)
-    pool.close()
-    pool.join()
+        pool = Pool(max_p, maxtasksperchild=batches)
+        tempResults = pool.starmap(selectViewTaskV3,args2)
+        pool.close()
+        pool.join()
+        results.extend(tempResults)
+        iter += batch_size
 
     new_results = []
-    f = open("meshToView.txt", "a")
+    f = open("meshToView.txt","w+")
     for x in results:
         for z in x:
             new_results.append(z)
@@ -322,6 +357,29 @@ def groupMesh(mesh):
     f.close()
     pkl.dump(new_results, open("meshToView.p", "wb"))
 
+@njit(parallel=True)
+def getRays(face, vert, f, c):
+    rays = np.zeros(shape=(face.shape[0]*3, 2, 3), dtype=np.float32)
+    for x in pr(face.shape[0]):
+        v = np.zeros(shape=(1,3), dtype=np.float32)
+        v[0] = vert[face[x][0]]
+        v[1] = vert[face[x][1]]
+        v[2] = vert[face[x][2]]
+        g = np.zeros(shape=(1,3), dtype=np.float32)
+        g[0] = vert[f[0]]
+        g[1] = vert[f[1]]
+        g[2] = vert[f[2]]
+        cnt = -1
+        if isbetween(g, c, v):
+            for a in v:
+                cnt += 1
+                rays[(int)((x + 1) * 3 + cnt - 4)][0][0] = c[0]
+                rays[(int)((x + 1) * 3 + cnt - 4)][0][1] = c[1]
+                rays[(int)((x + 1) * 3 + cnt - 4)][0][2] = c[2]
+                rays[(int)((x + 1) * 3 + cnt - 4)][1][0] = a[0]
+                rays[(int)((x + 1) * 3 + cnt - 4)][1][1] = a[1]
+                rays[(int)((x + 1) * 3 + cnt - 4)][1][2] = a[2]
+    return rays
 
 @jit(nopython=True)
 def surface_normal_newell(poly):
@@ -339,18 +397,24 @@ def surface_normal_newell(poly):
 
 @jit(nopython=True)
 def checkAngle(mesh, clv):
-
     v1_u = surface_normal_newell(mesh)
     v2_u = clv
 
-    degrees = math.degrees(np.arccos(np.minimum(1.0, np.maximum(np.dot(v1_u, v2_u), -1.0))))
-    #rad = np.arccos(np.dot(v1_u, v2_u))
-    #degrees = math.degrees(rad)
+    #degrees = math.degrees(np.arccos(np.minimum(1.0, np.maximum(np.dot(v1_u, v2_u), -1.0))))
+
+    rad = np.arccos(np.dot(v1_u, v2_u))
+    degrees = math.degrees(rad)
     return degrees
 
 @jit(nopython=True)
+def checkAngle2(mesh, clv):
+    v1_u = surface_normal_newell(mesh)
+    v2_u = clv
+    return np.dot(v1_u, v2_u)
+
+@jit(nopython=True)
 def unit_vector(vector):
-    return np.divide(vector , np.linalg.norm(vector))
+    return np.divide(vector, np.linalg.norm(vector))
 
 def consumer(queue, closed, size):
 
@@ -379,14 +443,12 @@ def consumer(queue, closed, size):
 
 
 def createTextureMap(s):
-    # should change this later on
-    list = pkl.load(open("meshToView.p", "rb"))
+    lst = pkl.load(open("meshToView.p", "rb"))
     Q = Manager().Queue()
     size = s
     meshes = mesh.faces()
     vertices = mesh.mesh_vertices()
     uv = mesh.uv_vertices()
-    processes = []
     closed = Manager().Value('1', 0)
 
     pictures = {}
@@ -400,11 +462,7 @@ def createTextureMap(s):
     print(" - " + datetime.now().strftime("%H:%M:%S") + ": Loading Data to Memory...")
 
 
-    ignored = 0
-    outside_region = 0
-    line_crops = 0
-
-    list = sorted(list, key=itemgetter(1))
+    lst = sorted(lst, key=itemgetter(1))
 
     args = []
     p_max = 4
@@ -414,8 +472,7 @@ def createTextureMap(s):
     for x in range(p_max):
         args.append([])
 
-    for m in list:
-
+    for m in lst:
         imgId = m[1]
 
         if(imgId != current_img_id):
@@ -440,48 +497,20 @@ def createTextureMap(s):
                 tmp.append(n)
             dst_v.append(tmp)
 
-        b_b = CT.calcBoundingBoxTri(dst_v)
-
         src_tri_coords = []
-        skip = 0
 
-        src_size = pictures[imgId].size
         for v in src_v:
-            xyz1 = np.array([v[0],v[1],v[2],1], dtype=np.float32)
+            xyz1 = np.array([v[0],v[1],v[2],1], dtype=np.float64)
 
-            im = np.array(intrinsics[cameras[imgId][1]][0], dtype=np.float32)
-            em = np.array(poses[cameras[imgId][0]][0], dtype=np.float32)
-            #dist = np.array(intrinsics[cameras[imgId][1]][1], dtype=np.float32)
+            im = np.array(intrinsics[cameras[imgId][1]][0], dtype=np.float64)
+            em = np.array(poses[cameras[imgId][0]][0], dtype=np.float64)
+            #dist = np.array(intrinsics[cameras[imgId][1]][1], dtype=np.float64)
             n = CT.getPixelCoords(xyz1, im, em)
             #n = CT.undistortcoords(n,im,dist)
             src_tri_coords.append(n)
 
-        bb = CT.calcBoundingBoxTri(src_tri_coords)
+        bb = CT.calcBoundingBoxTri(np.array(src_tri_coords))
         crop_size = ((bb[0][0]), (bb[0][1]), (bb[1][0]), (bb[1][1]))
-        counted = -1
-        for n in bb:
-            for x in range(len(src_size)):
-                if(n[x]>src_size[x]):
-                    skip = 1
-                    if(counted == -1):
-                        outside_region += 1
-                        counted = 1
-                elif(n[x]<0):
-                    skip = 1
-                    if (counted == -1):
-                        outside_region += 1
-                        counted = 1
-
-        if crop_size[0] == crop_size[2]:
-            skip = 1
-            line_crops += 1
-        elif crop_size[1] == crop_size[3]:
-            skip = 1
-            line_crops += 1
-
-        if skip == 1:
-            ignored += 1
-            continue
 
         args[p_iter].append([src_tri_coords, dst_v, Q, pictures[imgId].crop(crop_size)])
         p_iter += 1
@@ -489,10 +518,7 @@ def createTextureMap(s):
             p_iter = 0
 
     print(" - " + datetime.now().strftime("%H:%M:%S") + ": Done")
-    print(" - " + datetime.now().strftime("%H:%M:%S") + ": Total Meshes: " + str(len(meshes)))
-    print(" - " + datetime.now().strftime("%H:%M:%S") + ": Error Meshes: " + str(ignored)
-        + " [ Outside Region: " + str(outside_region) + ", Line Crops: " + str(line_crops) + " ]"
-        )
+    print(" - " + datetime.now().strftime("%H:%M:%S") + ": Total Triangles: " + str(len(meshes)))
 
 
     del pictures
@@ -509,6 +535,7 @@ def createTextureMap(s):
     ppl.close()
 
     ppl.join()
+
     consumer_process = Process(target=consumer, args=(Q, closed, size))
     consumer_process.start()
     closed.set(1)
@@ -612,24 +639,8 @@ def Start(m,s,v):
         lv = np.subtract(np.transpose(cameras[x][3]), poses[cameras[x][0]][1])
         lv = lv[0]
         lv = unit_vector(lv)
-        #lv = np.multiply(lv,-1)
         poses[cameras[x][0]][2] = np.array(lv, dtype=np.float32)
 
-    # pvmesh = pv.read(mesh_location)
-    # plotter = pv.Plotter()
-    # plotter.add_mesh(pvmesh, color='red')
-    #
-    # for x in poses.values():
-    #      #point = x[1]
-    #      lv = x[2]
-    #      line = [x[1], x[1] + (np.multiply(lv, 1))]
-    #      #plotter.add_points(np.array(point))
-    #      plotter.add_lines(np.array(line))
-    #
-    # for x in cameras.values():
-    #     point = x[3]
-    #     plotter.add_points(np.array(point).transpose(), color="red")
-    # plotter.show()
 
     print(datetime.now().strftime("%H:%M:%S") + ": Done")
 
