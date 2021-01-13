@@ -35,6 +35,7 @@ class partition():
     def getParts(self):
 
         partitions = []
+        partitions_nv = []
         partitions_seed = []
         remaining_faces = {}
         for x in self.mesh_faces:
@@ -171,35 +172,43 @@ class partition():
                 total += 1
 
                 if(len(current_chart)>=part_size):
-                    #print(str(len(partitions)+1)+".1 " + str(len(current_chart)))
+                    print(str(len(partitions)+1)+".1 " + str(len(current_chart)))
                     addRemaining(remaining_faces, candidates)
                     done=1
                 elif(len(remaining_faces)<=0 and len(candidates)==0):
-                    #print(str(len(partitions)+1)+".2 " + str(len(current_chart)))
+                    print(str(len(partitions)+1)+".2 " + str(len(current_chart)))
                     done=1
                 elif(len(candidates)==0):
-                    #print(str(len(partitions)+1)+".3 " + str(len(current_chart)))
+                    print(str(len(partitions)+1)+".3 " + str(len(current_chart)))
                     done=1
 
             if(len(current_chart)>0):
-                if(len(current_chart)<100 and len(partitions)>5):
+                if(len(current_chart)<100 and len(partitions)>10):
                     min_id = -1
                     min_len = -1
+                    min_nv = -1
                     cnt = -1
                     for x in partitions:
                         cnt+=1
                         s_tri = np.array([self.mesh_vertices[x[0][0]-1], self.mesh_vertices[x[0][0]-1], self.mesh_vertices[x[0][0]-1]])
                         d_tri = np.array([self.mesh_vertices[current_chart[0][0]-1], self.mesh_vertices[current_chart[0][0]-1], self.mesh_vertices[current_chart[0][0]-1]])
+                        s_nv = partitions_nv[cnt]
+                        d_nv = current_nv
+                        angle = np.dot(s_nv,d_nv)
                         length = dist(cent(s_tri),cent(d_tri))
                         if(min_len == -1):
-                            min_len = length
+                            min_len = length*(1-angle)
                             min_id = cnt
+                            min_nv = s_nv
                         elif length < min_len:
-                            min_len = length
+                            min_len = length*(1-angle)
                             min_id = cnt
+                            min_nv = s_nv
                     partitions[min_id].extend(current_chart)
+                    partitions_nv[min_id] = np.array([(current_nv[0] + min_nv[0])/2, (current_nv[1] + min_nv[1])/2, (current_nv[2] + min_nv[2])/2])
                 else:
                     partitions.append(current_chart)
+                    partitions_nv.append(current_nv)
                     partitions_seed.append(current_chart[0])
 
         #print("Total Partitions: " + str(len(partitions)))
