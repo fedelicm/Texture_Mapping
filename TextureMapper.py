@@ -16,12 +16,6 @@ import objReader
 import numpy as np
 from datetime import datetime
 from MaskSys import MaskQueue
-meshroom_sfm_file_location = None
-meshroom_sfm = None
-mesh_location = None
-mesh_obj = None
-xatlas_dir = None
-sfm_json = None
 import sys
 import random
 from numba import jit, njit  # , cuda, float32
@@ -35,10 +29,15 @@ intrinsics = {}
 poses = {}
 mesh = None
 from operator import itemgetter
-#import pyvista as pv
-import networkx as nx
 import Grouper
 from pyoctree import pyoctree as ot
+
+meshroom_sfm_file_location = None
+meshroom_sfm = None
+mesh_location = None
+mesh_obj = None
+xatlas_dir = None
+sfm_json = None
 
 @jit(nopython=True)
 def calcBoundingBoxTri(c1,c2,c3):
@@ -111,12 +110,10 @@ def checkfit(face_coords_np, im, em, h, w):
     return 1
 
 @njit(fastmath=True)
-def isbetween(face_coords_np, c, x):
-
+def isbetween(face_coords_np, c, y):
     for z in face_coords_np:
-        for y in x:
-            if( np.sqrt(np.square(y[0]-c[0]) + np.square(y[1]-c[1]) + np.square(y[2]-c[2])) < np.sqrt(np.square(z[0]-c[0]) + np.square(z[1]-c[1]) + np.square(z[2]-c[2]))):
-                return True
+        if( np.sqrt(np.square(y[0]-c[0]) + np.square(y[1]-c[1]) + np.square(y[2]-c[2])) < np.sqrt(np.square(z[0]-c[0]) + np.square(z[1]-c[1]) + np.square(z[2]-c[2]))):
+            return True
     return False
 
 def selectViewTaskV3(data):
@@ -125,10 +122,9 @@ def selectViewTaskV3(data):
 
     poses = data[2]
 
-    intrinsics = data[4]
+    intrinsics = data[3]
 
-    face = data[5]
-    vert = data[3]
+    occluded = data[4]
 
     cam_score2 = np.zeros(len(cameras))
     results = []
@@ -140,59 +136,32 @@ def selectViewTaskV3(data):
     for z in status:
         for y in cameras:
             z.append(None)
-
-    # tree = ot.PyOctree(vert, face)
-    # p = Dict()
-    # for x in poses:
-    #     p[x] = np.array(poses[x][1], dtype=np.float32)
-
     count2 = -1
-    occluded = {}
     cr = -1
     for z in args:
         cr += 1
         if(cr==10):
             cr=0
-
         count2 += 1
         face_coords_np = np.array(z[0], dtype=np.float64)
         count = -1
         for cam in cameras:
-
             count += 1
-
-            # if (cr == 0):
-            #     ix = cameras[cam][0]
-            #     rays = getRays(face, vert, z[1], p[ix])
-            #     rays = rays[~np.all(rays == 0, axis=2)]
-            #     rays = pairpoints(rays)
-            #     t = int(len(rays)*0.05)
-            #     if(t>0):
-            #         rays = np.array(random.choices(rays, k=t))
-            #
-            #     start = time.time()
-            #     i = tree.rayIntersections(rays)
-            #     end = time.time()
-            #     print(str(rays.shape) + " " + str(end-start))
-            #     if (len(i) > 0):
-            #         cam_score2[count] -= 5
-            #         if str(z[1]) in occluded:
-            #             occluded[str(z[1])].append(cam)
-            #         else:
-            #             occluded[str(z[1])] = [cam]
-            #     else:
-            #         occluded[str(z[1])] = []
-
-
-            status[count2][count]= checkfit(face_coords_np,
+            status[count2][count] = checkfit(face_coords_np,
                                             np.array(intrinsics[cameras[cam][1]][0], dtype=np.float64),
                                             np.array(poses[cameras[cam][0]][0], dtype=np.float64),
                                             intrinsics[cameras[cam][1]][2][1],
                                             intrinsics[cameras[cam][1]][2][0])
-            d = dist2(cent(face_coords_np), np.array(poses[cameras[cam][0]][1]))
+
             angle = checkAngle2(face_coords_np, np.array(poses[cameras[cam][0]][2]))
+            correctstr = str(sorted(z[1]))
             if status[count2][count] == 1:
-                cam_score2[count] -= angle/d
+                if (cam in occluded[correctstr]):
+                    cam_score2[count] += -3
+                else:
+                    cam_score2[count] += -angle
+            else:
+                cam_score2[count] += -2
 
     ####################################################
 
@@ -205,9 +174,6 @@ def selectViewTaskV3(data):
 
         count = -1
         for cam in cameras:
-            if(str(z[1]) in occluded):
-                if(len(occluded[str(z[1])]>0)):
-                    continue
             count += 1
 
             # if(int(occluded[count])==1):
@@ -215,17 +181,11 @@ def selectViewTaskV3(data):
             #     continue
             # else:
             #     count+=1
+
             if status[count2][count] == 0:
                 continue
-
-            #d = dist2(cent(face_coords_np), np.array(poses[cameras[cam][0]][1]))
-
             angle = checkAngle2(face_coords_np, np.array(poses[cameras[cam][0]][2]))
-            #score = 0.6*(angle/180) + 0.4*(cam_score2[count])/len(cam_score2) - 0.2*d
-            #score = (cam_score2[count]) + len(args)*( angle )
-            score = cam_score2[count]*(-angle)
-            #angle = checkAngle2(face_coords_np, poses[cameras[cam][0]][2])
-            #score = angle * cam_score2[count] /  (np.square(d)*20)
+            score = cam_score2[count]*angle
             if min == -1:
                 min = [score,  cam, face, count]
             elif score < min[0]:
@@ -238,20 +198,13 @@ def selectViewTaskV3(data):
 
 @njit
 def dist(p1,p2):
-    dist = np.linalg.norm(p2-p1)
+    d = p2-p1
+    dist = np.sqrt(np.square(d[0]) + np.square(d[1]) + np.square(d[2]))
     return dist
 
 @njit
 def dist2(c,y):
     return np.sqrt(np.square(y[0] - c[0]) + np.square(y[1] - c[1]) + np.square(y[2] - c[2]))
-
-@njit(parallel=True)
-def pairpoints(rays):
-    rays2 = np.zeros(shape=((int)(rays.shape[0] / 2), 2, 3,), dtype=np.float32)
-    for i in pr((int)(rays.shape[0] / 2)):
-        rays2[i][0] = rays[(int)(i * 2)]
-        rays2[i][1] = rays[(int)(i * 2 + 1)]
-    return rays2
 
 @njit
 def cent(triangle):
@@ -261,19 +214,70 @@ def cent(triangle):
     c[2] = (triangle[0][2] + triangle[1][2] + triangle[2][2])/3
     return c
 
+def occlussionProcess(vert2, face3, poses, face, face2, cameras):
+    p = Dict()
+    for x in poses:
+        p[x] = np.array(poses[x][1], dtype=np.float32)
+    face3 = np.array(face3, dtype=np.int32)
+    tree = ot.PyOctree(vert2, face2)
+    occluded = {}
+    cnt = -1
+    for f in face3:
+        sortedstr = str(sorted(face[cnt]))
+        cnt += 1
+        for cam in cameras:
+            id = cameras[cam][0]
+            ray = getRays(vert2, f, p[id])
+            i = []
+            interPoints = []
+            inter = tree.rayIntersection(ray)
+            for intersections in inter:
+                interPoints.append([intersections.p, tree.polyList[intersections.triLabel].N])
+            rv = unit_vector_points(ray[0], ray[1])
+            for it in interPoints:
+                add = 1
+                if (np.dot(it[1], rv) < 0):
+                    if isbetween(np.array([vert2[f[0]],vert2[f[1]],vert2[f[2]]]), np.array(p[id]), np.array(it[0])):
+                        add = 1
+                    else:
+                        add = 0
+                    # if(add==1):
+                    #     for vv in f:
+                    #         if (it[2] == vert2[vv]).all():
+                    #             add = 0
+                    #             break
+                    if (add == 1):
+                       i.append(it[0])
+
+            if(len(i)>1):
+                if sortedstr in occluded:
+                    occluded[sortedstr].append(cam)
+                else:
+                    occluded[sortedstr] = [cam]
+            else:
+                if sortedstr in occluded:
+                    continue
+                else:
+                    occluded[sortedstr] = []
+
+    return occluded
+
 def groupMesh(mesh):
-    face_c = mesh.faces_coords()
+    #face_c = mesh.faces_coords()
     face = mesh.faces()
 
     vert = mesh.mesh_vertices()
 
     max_p = 10
+    max_p2 = 10
     batches = 6
     batch_size = max_p*batches
-    parts = 8
-
-    # grouper = Grouper.partition(vert, face, parts)
-    # partitions = grouper.getParts()
+    parts = 15
+    print(" - " + datetime.now().strftime("%H:%M:%S") + ": Creating Partitions....")
+    grouper = Grouper.partition(vert, face, parts)
+    partitions = grouper.getParts()
+    pkl.dump(partitions, open("partitions.p", "wb"))
+    print(" - " + datetime.now().strftime("%H:%M:%S") + ": Done")
     partitions = pkl.load(open("partitions.p", "rb"))
     parts = len(partitions)
     vert_parts = []
@@ -284,101 +288,91 @@ def groupMesh(mesh):
 
     for x in range(parts):
         for y in partitions[x]:
-            v = [[vert[y[0]-1],  vert[y[1]-1], vert[y[2]-1]], np.array(y,dtype=int)]
+            v = [[vert[y[0]-1],  vert[y[1]-1], vert[y[2]-1]], np.array(y, dtype=int)]
             vert_parts[x].append(v)
 
     results = []
-    iter = 0
-    occluded = {}
+
     face2 = []
+
     for x in face:
         face2.append([x[0] - 1, x[1] - 1, x[2] - 1])
     face2 = np.array(face2, dtype=np.int32)
     vert2 = np.array(vert, dtype=float)
-    # tree = ot.PyOctree(vert2, face2)
-    # p = Dict()
-    # for x in poses:
-    #     p[x] = np.array(poses[x][1], dtype=np.float32)
-    # cnt = -1
-    # for f in face2:
-    #     start = time.time()
-    #     cnt2 = 0
-    #     cnt += 1
-    #     for cam in cameras:
-    #         id = cameras[cam][0]
-    #         rays = getRays(face2, vert2, f, p[id])
-    #         rays = rays[~np.all(rays == 0, axis=2)]
-    #         rays = pairpoints(rays)
-    #         t = int(len(rays)*0.05)
-    #         if(t>0):
-    #           rays = np.array(random.choices(rays, k=t))
-    #         i = tree.rayIntersections(rays)
-    #         if(len(i)>0):
-    #             print("Occlussion Detected")
-    #             if str(face[cnt]) in occluded:
-    #                 occluded[str(face[cnt])].append(cam)
-    #             else:
-    #                 occluded[str(face[cnt])] = [cam]
-    #         else:
-    #             occluded[str(face[cnt])] = []
-    #         cnt2+=1
-    #     end = time.time()
-    #     print(str(cnt+1)+"."+str(len(occluded[str(face[cnt])])) + " " + str(end-start))
-    #
-    # print("Done Occlussion Check")
+    pool2 = Pool(max_p2)
+    args3 = []
+    faceparts = []
+    face3 = []
+    for x in range(max_p2):
+        faceparts.append([])
+        face3.append([])
 
-    while iter < parts:
+    count3 = 0
+    for x in range(len(face2)):
+        faceparts[count3].append(face2[x])
+        face3[count3].append(face[x])
+        count3+=1
+        if(count3==max_p2):
+            count3=0
+
+    for x in range(max_p2):
+        args3.append([vert2, faceparts[x], poses, face3[x], face2, cameras])
+
+    print(" - " + datetime.now().strftime("%H:%M:%S") + ": Calculating Occlussions....")
+    occs = pool2.starmap(occlussionProcess,args3)
+    pool2.close()
+    pool2.join()
+    pkl.dump(occs, open("occs.p", "wb"))
+    print(" - " + datetime.now().strftime("%H:%M:%S") + ": Done Occlussion Check")
+
+    occluded = {}
+
+    #occs = pkl.load(open("occs.p", "rb"))
+    for x in occs:
+        for y in x:
+            occluded[str(y)] = x[y]
+
+    print(" - " + datetime.now().strftime("%H:%M:%S") + ": Assigning views to mesh...")
+    itr = 0
+    while itr < parts:
 
         args2 = []
         for x in range(batch_size):
-            if(iter+x>=parts):
+            if(itr+x>=parts):
                 break
             args2.append([])
 
         for x in range(batch_size):
-            if(iter+x>=parts):
+            if(itr+x>=parts):
                 break
-            args2[x].append([vert_parts[iter+x], cameras, poses, vert2, intrinsics, face2])
+            args2[x].append([vert_parts[itr+x], cameras, poses, intrinsics, occluded])
 
         pool = Pool(max_p, maxtasksperchild=batches)
         tempResults = pool.starmap(selectViewTaskV3,args2)
         pool.close()
         pool.join()
         results.extend(tempResults)
-        iter += batch_size
+        itr += batch_size
+    print(" - " + datetime.now().strftime("%H:%M:%S") + ": Done")
 
     new_results = []
-    f = open("meshToView.txt","w+")
     for x in results:
         for z in x:
             new_results.append(z)
-            f.write(str(z))
-            f.write("\n")
-    f.close()
     pkl.dump(new_results, open("meshToView.p", "wb"))
 
-@njit(parallel=True)
-def getRays(face, vert, f, c):
-    rays = np.zeros(shape=(face.shape[0]*3, 2, 3), dtype=np.float32)
-    for x in pr(face.shape[0]):
-        v = np.zeros(shape=(1,3), dtype=np.float32)
-        v[0] = vert[face[x][0]]
-        v[1] = vert[face[x][1]]
-        v[2] = vert[face[x][2]]
-        g = np.zeros(shape=(1,3), dtype=np.float32)
-        g[0] = vert[f[0]]
-        g[1] = vert[f[1]]
-        g[2] = vert[f[2]]
-        cnt = -1
-        if isbetween(g, c, v):
-            for a in v:
-                cnt += 1
-                rays[(int)((x + 1) * 3 + cnt - 4)][0][0] = c[0]
-                rays[(int)((x + 1) * 3 + cnt - 4)][0][1] = c[1]
-                rays[(int)((x + 1) * 3 + cnt - 4)][0][2] = c[2]
-                rays[(int)((x + 1) * 3 + cnt - 4)][1][0] = a[0]
-                rays[(int)((x + 1) * 3 + cnt - 4)][1][1] = a[1]
-                rays[(int)((x + 1) * 3 + cnt - 4)][1][2] = a[2]
+
+@njit
+def getRays(vert, f, c):
+    rays = np.zeros(shape=(2, 3), dtype=np.float32)
+    v = np.zeros(shape=(1, 3), dtype=np.float32)
+    rays[0][0] = c[0]
+    rays[0][1] = c[1]
+    rays[0][2] = c[2]
+    v[0] = vert[f[0]]
+    v[1] = vert[f[1]]
+    v[2] = vert[f[2]]
+    rays[1] = cent(v)
     return rays
 
 @jit(nopython=True)
@@ -400,21 +394,26 @@ def checkAngle(mesh, clv):
     v1_u = surface_normal_newell(mesh)
     v2_u = clv
 
-    #degrees = math.degrees(np.arccos(np.minimum(1.0, np.maximum(np.dot(v1_u, v2_u), -1.0))))
-
     rad = np.arccos(np.dot(v1_u, v2_u))
     degrees = math.degrees(rad)
     return degrees
 
-@jit(nopython=True)
+@njit
 def checkAngle2(mesh, clv):
     v1_u = surface_normal_newell(mesh)
     v2_u = clv
     return np.dot(v1_u, v2_u)
 
-@jit(nopython=True)
+@njit
 def unit_vector(vector):
-    return np.divide(vector, np.linalg.norm(vector))
+    magnitude = np.sqrt(np.square(vector[0]) + np.square(vector[1]) + np.square(vector[2]))
+    return np.divide(vector, magnitude)
+
+@njit
+def unit_vector_points(p1, p2):
+    vector = p2-p1
+    magnitude = np.sqrt(np.square(vector[0]) + np.square(vector[1]) + np.square(vector[2]))
+    return np.divide(vector, magnitude)
 
 def consumer(queue, closed, size):
 
@@ -618,22 +617,27 @@ def Start(m,s,v):
 
         poses[x['poseId']] = [mat,c,0]
 
-
+    to_remove = []
     for x in cameras:
+        try:
+            principal = [[intrinsics[cameras[x][1]][0][0][2]], [intrinsics[cameras[x][1]][0][1][2]], [1]]
 
-        principal = [[intrinsics[cameras[x][1]][0][0][2]], [intrinsics[cameras[x][1]][0][1][2]], [1]]
+            ext = poses[cameras[x][0]][0]
 
-        ext = poses[cameras[x][0]][0]
+            temp = np.matmul(intrinsics[cameras[x][1]][0], ext)
 
-        temp = np.matmul(intrinsics[cameras[x][1]][0], ext)
+            principal[0] -= temp[0][3]
+            principal[1] -= temp[1][3]
+            principal[2] -= temp[2][3]
 
-        principal[0] -= temp[0][3]
-        principal[1] -= temp[1][3]
-        principal[2] -= temp[2][3]
+            p_world = np.linalg.solve(temp[:3, :3], principal)
 
-        p_world = np.linalg.solve(temp[:3, :3], principal)
+            cameras[x] = [cameras[x][0], cameras[x][1], cameras[x][2], p_world]
+        except:
+            to_remove.append(x)
 
-        cameras[x] = [cameras[x][0], cameras[x][1], cameras[x][2], p_world]
+    for x in to_remove:
+        cameras.pop(x, None)
 
     for x in cameras:
         lv = np.subtract(np.transpose(cameras[x][3]), poses[cameras[x][0]][1])
