@@ -172,14 +172,11 @@ class partition():
                 total += 1
 
                 if(len(current_chart)>=part_size):
-                    #print(str(len(partitions)+1)+".1 " + str(len(current_chart)))
                     addRemaining(remaining_faces, candidates)
                     done=1
                 elif(len(remaining_faces)<=0 and len(candidates)==0):
-                    #print(str(len(partitions)+1)+".2 " + str(len(current_chart)))
                     done=1
                 elif(len(candidates)==0):
-                    #print(str(len(partitions)+1)+".3 " + str(len(current_chart)))
                     done=1
 
             if(len(current_chart)>0):
