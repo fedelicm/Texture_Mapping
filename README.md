@@ -1,7 +1,7 @@
 #	Texture_Mapping For 3D-Reconstructed Models
 #
 #	Prerequsites:
-#	- Numpu
+#	- Numpy
 #	- Numba
 #	- NextworkX
 #	- Scipy
