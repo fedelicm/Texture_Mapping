@@ -20,4 +20,5 @@
 #
 #
 #
-#
+# Included compiled binaries:
+# - https://github.com/jpcy/xatlas
