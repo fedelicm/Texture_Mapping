@@ -1,14 +1,12 @@
 import numpy as np
 from PIL import Image
 from PIL import ImageDraw
-
 from MaskSys import MaskObj
-import cv2
 
 def getMask(Q):
 
     for data in Q:
-        src_tri_coords = data[0]
+        src_tri_coords = np.array(data[0])
         dst_v = data[1]
         Q = data[2]
         cropped_img = data[3]
@@ -20,7 +18,7 @@ def getMask(Q):
         arr_img = np.concatenate((arr_img , z), axis=2)
         cropped_img = Image.fromarray(arr_img)
 
-        dst_tri = [dst_v[0], dst_v[1], dst_v[2]]
+        dst_tri = np.array([dst_v[0], dst_v[1], dst_v[2]])
         bb2 = calcBoundingBoxTri(dst_tri)
         origin_2 = [bb2[0][0], bb2[0][1]]
 
@@ -49,6 +47,7 @@ def getMask(Q):
 
         dst_img_size = getlenXY(bb2)
 
+
         transformed = cropped_img.transform((dst_img_size[0], dst_img_size[1]), Image.AFFINE, A, resample=Image.BICUBIC, fillcolor=(0,0,0,0))
 
         adjusted_tri = realign(dst_tri, origin_dst)
@@ -75,10 +74,6 @@ def getPixelCoords(wrld_xyz, intrinsics_mtrx, extrinsics_mtrx):
         b[1] = b[1] / b[2]
 
     return b[:2]
-
-def undistortcoords(xy,im, dist):
-    undistorted_xy = cv2.undistortPoints(np.array(xy, dtype=np.float32), np.array(im, dtype=np.float32)[:3,:3], dist, P=np.array(im, dtype=np.float32)[:3,:3])
-    return undistorted_xy[0][0]
 
 def realign(tri, origin):
     new_tri = []
