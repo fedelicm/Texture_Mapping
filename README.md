@@ -1,6 +1,6 @@
 #	Texture Mapping Algorithm For 3D-Reconstructed Models
 #
-#	Prerequisites:
+#	Required Libraries:
 #	- Numpy
 #	- Numba
 #	- NextworkX
